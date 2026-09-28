@@ -2,10 +2,16 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
+#include <unistd.h>   /* isatty */
+
+static int ui_is_tty(void) {
+    return isatty(fileno(stdout));
+}
 
 void ui_clear(void) {
-    /* ANSI: очистить экран, курсор в 0,0 */
-    printf("\033[2J\033[H");
+    if (!ui_is_tty()) return;
+    printf("\033[2J\033[3J\033[H");
     fflush(stdout);
 }
 
@@ -34,12 +40,13 @@ static void vprint_colored(const char *color, const char *prefix,
     fprintf(stream, "%s%s", color, prefix ? prefix : "");
     vfprintf(stream, fmt, ap);
     fprintf(stream, UI_RESET "\n");
+    fflush(stream);
 }
 
 void ui_error(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    vprint_colored(UI_RED UI_BOLD, "[ОШИБКА] ", fmt, ap, stderr);
+    vprint_colored(UI_RED UI_BOLD, "[ОШИБКА] ", fmt, ap, stdout);  /* stdout! */
     va_end(ap);
 }
 
@@ -70,6 +77,10 @@ void ui_prompt(const char *fmt, ...) {
 void ui_pause(void) {
     printf(UI_DIM "\n  Нажмите Enter, чтобы продолжить..." UI_RESET);
     fflush(stdout);
-    int c;
-    while ((c = getchar()) != '\n' && c != EOF) {}
+    char buf[16];
+    if (!fgets(buf, sizeof(buf), stdin)) return;
+    if (!strchr(buf, '\n')) {
+        int c;
+        while ((c = getchar()) != '\n' && c != EOF) {}
+    }
 }

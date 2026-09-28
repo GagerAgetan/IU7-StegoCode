@@ -10,8 +10,12 @@
 #define MAX_LINE 8192
 #define MAX_PATH 1024
 
-/* ---- Ввод ---- */
+/* Проверяет, является ли строка ровно "q" (одна буква). */
+static int is_quit(const char *s) {
+    return s && s[0] == 'q' && s[1] == '\0';
+}
 
+/* Читает строку. Возвращает NULL при EOF. */
 static char *read_line(const char *prompt) {
     static char buf[MAX_LINE];
     ui_prompt("%s", prompt);
@@ -21,7 +25,6 @@ static char *read_line(const char *prompt) {
     return buf;
 }
 
-/* Разбирает "<строка>\0 <ключ>". Возвращает 0 при успехе. */
 static int parse_input(const char *line, char **msg_out, char **key_out) {
     const char *sep = strstr(line, "\\0");
     if (!sep) {
@@ -56,11 +59,10 @@ static int parse_input(const char *line, char **msg_out, char **key_out) {
     return 0;
 }
 
-/* ---- Действия ---- */
-
 static int do_encode(Image *img, const char *current_path) {
-    char *line = read_line("  Введите строку (формат: <текст>\\0 <ключ>) > ");
-    if (!line) { ui_error("не удалось прочитать строку"); return -1; }
+    char *line = read_line("  Введите строку (формат: <текст>\\0 <ключ>, q — назад) > ");
+    if (!line) { ui_info("отменено"); return 0; }
+    if (is_quit(line)) { ui_info("возврат в меню"); return 0; }
 
     char *msg = NULL, *key = NULL;
     if (parse_input(line, &msg, &key) < 0) return -1;
@@ -75,13 +77,16 @@ static int do_encode(Image *img, const char *current_path) {
     ui_success("строка закодирована в изображение");
 
     printf("\n");
-    ui_prompt("  Сохранить в текущий файл (1) или в новый (2)? > ");
+    ui_prompt("  Сохранить в текущий файл (1) или в новый (2), q — назад? > ");
     fflush(stdout);
     char choice[16];
     if (!fgets(choice, sizeof(choice), stdin)) {
         ui_error("не удалось прочитать выбор");
         return -1;
     }
+    size_t n = strlen(choice);
+    if (n > 0 && choice[n - 1] == '\n') choice[n - 1] = '\0';
+    if (is_quit(choice)) { ui_info("возврат в меню"); return 0; }
 
     if (choice[0] == '1') {
         if (image_save(current_path, img) < 0) return -1;
@@ -89,11 +94,9 @@ static int do_encode(Image *img, const char *current_path) {
         return 0;
     }
 
-    char *name = read_line("  Введите имя нового файла > ");
-    if (!name || *name == '\0') {
-        ui_error("пустое имя файла");
-        return -1;
-    }
+    char *name = read_line("  Введите имя нового файла (q — назад) > ");
+    if (!name) { ui_info("отменено"); return 0; }
+    if (is_quit(name)) { ui_info("возврат в меню"); return 0; }
 
     char path[MAX_PATH];
     size_t nlen = strlen(name);
@@ -109,11 +112,10 @@ static int do_encode(Image *img, const char *current_path) {
 }
 
 static int do_decode(const Image *img) {
-    char *key = read_line("  Введите ключ > ");
-    if (!key || *key == '\0') {
-        ui_error("пустой ключ");
-        return -1;
-    }
+    char *key = read_line("  Введите ключ (q — назад) > ");
+    if (!key) { ui_info("отменено"); return 0; }
+    if (is_quit(key)) { ui_info("возврат в меню"); return 0; }
+
     char *text = stego_decode(img, key);
     if (!text) return -1;
 
@@ -124,15 +126,11 @@ static int do_decode(const Image *img) {
     return 0;
 }
 
-/* Меняет текущий файл. Обновляет *img и current_path. */
 static int do_change_file(Image *img, char *current_path, size_t cap) {
-    char *name = read_line("  Введите путь к PNG > ");
-    if (!name || *name == '\0') {
-        ui_error("пустой путь");
-        return -1;
-    }
+    char *name = read_line("  Введите путь к PNG (q — назад) > ");
+    if (!name) { ui_info("отменено"); return 0; }
+    if (is_quit(name)) { ui_info("возврат в меню"); return 0; }
 
-    /* Проверяем, что файл открывается для чтения. */
     FILE *probe = fopen(name, "rb");
     if (!probe) {
         ui_error("файл '%s' не найден или недоступен для чтения", name);
@@ -152,8 +150,6 @@ static int do_change_file(Image *img, char *current_path, size_t cap) {
     return 0;
 }
 
-/* ---- main ---- */
-
 int main(int argc, char **argv) {
     if (argc > 2) {
         fprintf(stderr, "Использование: %s [файл.png]\n", argv[0]);
@@ -164,12 +160,10 @@ int main(int argc, char **argv) {
     char current_path[MAX_PATH] = {0};
     Image img = {0};
 
-    /* Если аргумент передан — пытаемся загрузить сразу. */
     if (argc == 2) {
         if (image_load(argv[1], &img) == 0) {
             snprintf(current_path, sizeof(current_path), "%s", argv[1]);
         } else {
-            /* Не падаем — просто стартуем без файла. */
             ui_error("не удалось загрузить '%s', начнём без файла", argv[1]);
             ui_pause();
         }
@@ -190,11 +184,22 @@ int main(int argc, char **argv) {
             ui_menu("(файл не выбран)");
         }
 
-        ui_prompt("  Выбор > ");
+        ui_prompt("  Выбор (0-3, q — выход) > ");
         char buf[32];
         if (!fgets(buf, sizeof(buf), stdin)) break;
 
+        size_t n = strlen(buf);
+        if (n > 0 && buf[n - 1] == '\n') buf[n - 1] = '\0';
+
+        /* Дренаж, если строка не влезла */
+        if (!strchr(buf, '\n') && n >= sizeof(buf) - 1) {
+            int c;
+            while ((c = getchar()) != '\n' && c != EOF) {}
+        }
+
         printf("\n");
+
+        if (is_quit(buf)) { running = 0; break; }
 
         switch (buf[0]) {
         case '0':
@@ -227,7 +232,7 @@ int main(int argc, char **argv) {
             break;
 
         default:
-            ui_error("неизвестный пункт меню: '%c'", buf[0]);
+            ui_error("'%s' — не команда. Введите 0-3 или q", buf);
             ui_pause();
             break;
         }
@@ -236,6 +241,7 @@ int main(int argc, char **argv) {
     ui_clear();
     ui_banner();
     printf(UI_CYAN "  До встречи!\n" UI_RESET);
+    ui_clear();
     image_free(&img);
     return 0;
 }
