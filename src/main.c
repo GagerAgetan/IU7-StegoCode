@@ -2,13 +2,25 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <signal.h>
 
 #include "png_io.h"
 #include "stego.h"
 #include "ui.h"
+#include "files.h"
 
 #define MAX_LINE 8192
 #define MAX_PATH 1024
+
+/* ---------- Обработка сигналов ---------- */
+
+static void on_signal(int sig) {
+    (void)sig;
+    ui_leave();     /* вернуть терминал в нормальное состояние */
+    _exit(1);
+}
+
+/* ---------- Ввод ---------- */
 
 /* Проверяет, является ли строка ровно "q" (одна буква). */
 static int is_quit(const char *s) {
@@ -25,6 +37,7 @@ static char *read_line(const char *prompt) {
     return buf;
 }
 
+/* Разбирает "<строка>\0 <ключ>". Возвращает 0 при успехе. */
 static int parse_input(const char *line, char **msg_out, char **key_out) {
     const char *sep = strstr(line, "\\0");
     if (!sep) {
@@ -58,6 +71,8 @@ static int parse_input(const char *line, char **msg_out, char **key_out) {
     *key_out = key;
     return 0;
 }
+
+/* ---------- Действия ---------- */
 
 static int do_encode(Image *img, const char *current_path) {
     char *line = read_line("  Введите строку (формат: <текст>\\0 <ключ>, q — назад) > ");
@@ -150,6 +165,69 @@ static int do_change_file(Image *img, char *current_path, size_t cap) {
     return 0;
 }
 
+/* Показывает список PNG в текущем каталоге и даёт выбрать файл. */
+static int do_list_files(Image *img, char *current_path, size_t cap) {
+    size_t count = 0;
+    char **list = files_list_png(&count);
+    if (!list && count == 0) {
+        ui_error("не удалось прочитать содержимое каталога");
+        return -1;
+    }
+
+    ui_file_list(list, count, current_path);
+
+    if (count == 0) {
+        files_free_list(list, count);
+        return 0;
+    }
+
+    printf("\n");
+    ui_prompt("  Выбрать файл по номеру (Enter — назад) > ");
+    fflush(stdout);
+
+    char buf[32];
+    if (!fgets(buf, sizeof(buf), stdin)) {
+        files_free_list(list, count);
+        return -1;
+    }
+    size_t n = strlen(buf);
+    if (n > 0 && buf[n - 1] == '\n') buf[n - 1] = '\0';
+
+    if (buf[0] == '\0') {
+        files_free_list(list, count);
+        ui_info("возврат в меню");
+        return 0;
+    }
+
+    char *end = NULL;
+    long idx = strtol(buf, &end, 10);
+    if (*end != '\0' || idx < 1 || (size_t)idx > count) {
+        files_free_list(list, count);
+        ui_error("'%s' — не номер из списка", buf);
+        return -1;
+    }
+
+    const char *chosen = list[(size_t)idx - 1];
+
+    Image new_img;
+    if (image_load(chosen, &new_img) < 0) {
+        files_free_list(list, count);
+        return -1;
+    }
+
+    image_free(img);
+    *img = new_img;
+    snprintf(current_path, cap, "%s", chosen);
+
+    ui_success("файл загружен: %s (%dx%d)",
+               current_path, img->width, img->height);
+
+    files_free_list(list, count);
+    return 0;
+}
+
+/* ---------- main ---------- */
+
 int main(int argc, char **argv) {
     if (argc > 2) {
         fprintf(stderr, "Использование: %s [файл.png]\n", argv[0]);
@@ -157,41 +235,55 @@ int main(int argc, char **argv) {
     }
     srand((unsigned)time(NULL));
 
+    /* Восстановление терминала при любом завершении. */
+    atexit(ui_leave);
+    signal(SIGINT,  on_signal);
+    signal(SIGTERM, on_signal);
+
+    /* Загружаем файл, если передан аргументом. */
     char current_path[MAX_PATH] = {0};
     Image img = {0};
+    int early_error = 0;
 
     if (argc == 2) {
         if (image_load(argv[1], &img) == 0) {
             snprintf(current_path, sizeof(current_path), "%s", argv[1]);
         } else {
-            ui_error("не удалось загрузить '%s', начнём без файла", argv[1]);
-            ui_pause();
+            early_error = 1;
         }
     }
 
+    /* Входим в alt screen. */
+    ui_enter();
+
+    if (early_error) {
+        ui_error("не удалось загрузить '%s'", argv[1]);
+        ui_pause();
+    }
+
+    ui_clear();
+    ui_banner();
+
     int running = 1;
     while (running) {
-        ui_clear();
-        ui_banner();
-
         int has_file = (img.data != NULL);
+        char title[MAX_PATH + 64];
         if (has_file) {
-            char title[MAX_PATH + 64];
             snprintf(title, sizeof(title), "%s (%dx%d)",
                      current_path, img.width, img.height);
-            ui_menu(title);
         } else {
-            ui_menu("(файл не выбран)");
+            snprintf(title, sizeof(title), "(файл не выбран)");
         }
 
-        ui_prompt("  Выбор (0-3, q — выход) > ");
+        ui_menu(title);
+        ui_prompt("  Выбор (0-4, q — выход) > ");
         char buf[32];
         if (!fgets(buf, sizeof(buf), stdin)) break;
 
         size_t n = strlen(buf);
         if (n > 0 && buf[n - 1] == '\n') buf[n - 1] = '\0';
 
-        /* Дренаж, если строка не влезла */
+        /* Дренаж на случай, если строка не влезла в буфер. */
         if (!strchr(buf, '\n') && n >= sizeof(buf) - 1) {
             int c;
             while ((c = getchar()) != '\n' && c != EOF) {}
@@ -208,7 +300,7 @@ int main(int argc, char **argv) {
 
         case '1':
             if (!has_file) {
-                ui_error("сначала выберите файл (пункт 3)");
+                ui_error("сначала выберите файл (пункт 3 или 4)");
                 ui_pause();
                 break;
             }
@@ -218,7 +310,7 @@ int main(int argc, char **argv) {
 
         case '2':
             if (!has_file) {
-                ui_error("сначала выберите файл (пункт 3)");
+                ui_error("сначала выберите файл (пункт 3 или 4)");
                 ui_pause();
                 break;
             }
@@ -231,17 +323,21 @@ int main(int argc, char **argv) {
             ui_pause();
             break;
 
+        case '4':
+            do_list_files(&img, current_path, sizeof(current_path));
+            ui_pause();
+            break;
+
         default:
-            ui_error("'%s' — не команда. Введите 0-3 или q", buf);
+            ui_error("'%s' — не команда. Введите 0-4 или q", buf);
             ui_pause();
             break;
         }
+
+        ui_clear();   /* стираем alt screen — меню перерисуется в начале цикла */
     }
 
-    ui_clear();
-    ui_banner();
-    printf(UI_CYAN "  До встречи!\n" UI_RESET);
-    ui_clear();
     image_free(&img);
+    /* ui_leave вызовется через atexit — терминал вернётся в исходное состояние */
     return 0;
 }

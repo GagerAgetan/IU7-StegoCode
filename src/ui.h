@@ -9,8 +9,11 @@
 #define UI_GREEN   "\033[32m"
 #define UI_YELLOW  "\033[33m"
 #define UI_CYAN    "\033[36m"
+#include <stddef.h>
 
 /* Очистка экрана + курсор в начало */
+void ui_enter(void);
+void ui_leave(void);
 void ui_clear(void);
 
 /* Приветствие */
@@ -24,6 +27,7 @@ void ui_error(const char *fmt, ...);   /* красный, stderr */
 void ui_success(const char *fmt, ...); /* зелёный, stdout */
 void ui_info(const char *fmt, ...);    /* cyan, stdout */
 void ui_prompt(const char *fmt, ...);  /* жёлтый, stdout, без \n */
+void ui_file_list(char **files, size_t count, const char *current_file);
 
 /* Пауза "нажмите Enter" */
 void ui_pause(void);
