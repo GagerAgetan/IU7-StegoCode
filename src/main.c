@@ -12,6 +12,12 @@
 #define MAX_LINE 8192
 #define MAX_PATH 1024
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>   /* для _exit */
+#endif
+
 /* ---------- Обработка сигналов ---------- */
 
 static void on_signal(int sig) {
@@ -82,63 +88,91 @@ static int do_encode(Image *img, const char *current_path) {
     char *msg = NULL, *key = NULL;
     if (parse_input(line, &msg, &key) < 0) return -1;
 
-    if (stego_encode(img, msg, key) < 0) {
-        free(msg);
-        free(key);
-        return -1;
-    }
-    free(msg);
-    free(key);
-    ui_success("строка закодирована в изображение");
-
+    /* Сначала спрашиваем КУДА сохранять. */
     printf("\n");
     ui_prompt("  Сохранить в текущий файл (1) или в новый (2), q — назад? > ");
     fflush(stdout);
+
     char choice[16];
     if (!fgets(choice, sizeof(choice), stdin)) {
+        free(msg); free(key);
         ui_error("не удалось прочитать выбор");
         return -1;
     }
     size_t n = strlen(choice);
     if (n > 0 && choice[n - 1] == '\n') choice[n - 1] = '\0';
-    if (is_quit(choice)) { ui_info("возврат в меню"); return 0; }
-
-    if (choice[0] == '1') {
-        if (image_save(current_path, img) < 0) return -1;
-        ui_success("сохранено в '%s'", current_path);
+    if (is_quit(choice)) {
+        free(msg); free(key);
+        ui_info("возврат в меню");
         return 0;
     }
 
-    char *name = read_line("  Введите имя нового файла (q — назад) > ");
-    if (!name) { ui_info("отменено"); return 0; }
-    if (is_quit(name)) { ui_info("возврат в меню"); return 0; }
-
     char path[MAX_PATH];
-    size_t nlen = strlen(name);
-    if (nlen >= 4 && strcmp(name + nlen - 4, ".png") == 0) {
-        snprintf(path, sizeof(path), "%s", name);
+
+    if (choice[0] == '1') {
+        snprintf(path, sizeof(path), "%s", current_path);
     } else {
-        snprintf(path, sizeof(path), "%s.png", name);
+        char *name = read_line("  Введите имя нового файла (q — назад) > ");
+        if (!name) { free(msg); free(key); ui_info("отменено"); return 0; }
+        if (is_quit(name)) { free(msg); free(key); ui_info("возврат в меню"); return 0; }
+
+        size_t nlen = strlen(name);
+        if (nlen >= 4 && strcmp(name + nlen - 4, ".png") == 0) {
+            snprintf(path, sizeof(path), "%s", name);
+        } else {
+            snprintf(path, sizeof(path), "%s.png", name);
+        }
     }
 
-    if (image_save(path, img) < 0) return -1;
+    /* Теперь кодируем в КОПИЮ изображения, чтобы оригинал не пострадал,
+       если что-то пойдёт не так. */
+    Image tmp = {0};
+    if (image_copy(img, &tmp) < 0) {
+        free(msg); free(key);
+        ui_error("не удалось создать копию изображения");
+        return -1;
+    }
+
+    if (stego_encode(&tmp, msg, key) < 0) {
+        free(msg); free(key);
+        image_free(&tmp);
+        return -1;
+    }
+    free(msg); free(key);
+
+    if (image_save(path, &tmp) < 0) {
+        image_free(&tmp);
+        return -1;
+    }
+    image_free(&tmp);
+
     ui_success("сохранено в '%s'", path);
+
     return 0;
 }
 
 static int do_decode(const Image *img) {
-    char *key = read_line("  Введите ключ (q — назад) > ");
-    if (!key) { ui_info("отменено"); return 0; }
-    if (is_quit(key)) { ui_info("возврат в меню"); return 0; }
+    for (;;) {
+        ui_clear();
+        ui_banner();
 
-    char *text = stego_decode(img, key);
-    if (!text) return -1;
+        char *key = read_line("  Введите ключ (q — назад) > ");
+        if (!key) { ui_info("отменено"); return 0; }
+        if (is_quit(key)) { ui_info("возврат в меню"); return 0; }
 
-    printf("\n");
-    printf(UI_GREEN UI_BOLD "  Расшифрованная строка:" UI_RESET "\n");
-    printf(UI_BOLD "  \"%s\"" UI_RESET "\n\n", text);
-    free(text);
-    return 0;
+        char *text = stego_decode(img, key);
+        if (text) {
+            printf("\n");
+            printf(UI_GREEN UI_BOLD "  Расшифрованная строка:" UI_RESET "\n");
+            printf(UI_BOLD "  \"%s\"" UI_RESET "\n\n", text);
+            free(text);
+            return 0;
+        }
+
+        ui_error("не удалось декодировать: неверный ключ или данные повреждены");
+        ui_info("попробуйте другой ключ или нажмите q для возврата");
+        ui_pause();   /* чтобы пользователь успел прочитать ошибку */
+    }
 }
 
 static int do_change_file(Image *img, char *current_path, size_t cap) {
@@ -229,6 +263,11 @@ static int do_list_files(Image *img, char *current_path, size_t cap) {
 /* ---------- main ---------- */
 
 int main(int argc, char **argv) {
+
+    #ifdef _WIN32
+        SetConsoleOutputCP(CP_UTF8);
+        SetConsoleCP(CP_UTF8);
+    #endif
     if (argc > 2) {
         fprintf(stderr, "Использование: %s [файл.png]\n", argv[0]);
         return 1;
@@ -266,6 +305,10 @@ int main(int argc, char **argv) {
 
     int running = 1;
     while (running) {
+
+        ui_clear();
+        ui_banner();
+
         int has_file = (img.data != NULL);
         char title[MAX_PATH + 64];
         if (has_file) {

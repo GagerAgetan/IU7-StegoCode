@@ -42,7 +42,7 @@ void ui_clear(void) {
 void ui_banner(void) {
     printf(UI_CYAN UI_BOLD);
     printf("╔══════════════════════════════════════════════╗\n");
-    printf("║        LSB Steganography Tool (PNG)          ║\n");
+    printf("║          GAGER_AGETAN CYPHER MACHINE         ║\n");
     printf("╚══════════════════════════════════════════════╝\n");
     printf(UI_RESET);
 }

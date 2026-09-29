@@ -17,4 +17,6 @@ int  image_save(const char *path, const Image *img);
 
 void image_free(Image *img);
 
+int image_copy(const Image *src, Image *dst);
+
 #endif

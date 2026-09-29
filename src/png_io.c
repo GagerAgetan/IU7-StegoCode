@@ -41,3 +41,14 @@ void image_free(Image *img) {
         img->data = NULL;
     }
 }
+
+int image_copy(const Image *src, Image *dst) {
+    size_t sz = (size_t)src->width * (size_t)src->height * 3u;
+    unsigned char *buf = malloc(sz);
+    if (!buf) return -1;
+    memcpy(buf, src->data, sz);
+    dst->data = buf;
+    dst->width = src->width;
+    dst->height = src->height;
+    return 0;
+}
